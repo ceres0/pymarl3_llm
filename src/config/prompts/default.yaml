@@ -1,0 +1,57 @@
+task: marl
+intro: |
+  You are an expert in multi-agent reinforcement learning, game theory, and reward engineering.
+  We are going to design reward functions for cooperative/competitive multi-agent systems. 
+  
+environment_description: |
+  The environment is described as follows:
+  {environment_description}
+  The agents' observation and action spaces are described as follows:
+  {agents_observation_action_spaces}
+
+task_description: |
+  the agents are trying to achieve the following task:
+  {task_description}
+
+zero-shot_hint: |
+  Consider the following aspects when designing the reward function:
+  1. **Alignment with Task Objectives**: Ensure that the reward function directly incentivizes behaviors that lead to successful task completion.
+  2. **Shaping Rewards**: Use intermediate rewards to guide agents through complex tasks, breaking them down into manageable sub-goals.
+  3. **Avoiding Unintended Behaviors**: Be cautious of potential loopholes in the reward structure that could lead to undesired strategies.
+  4. **Scalability**: Design the reward function to be effective as the number of agents increases.
+  5. **Simplicity and Interpretability**: Keep the reward function as simple as possible while still being effective, making it easier to understand and debug.
+
+one-shot_hint: |
+  Here is an example of a well-designed reward function for a similar multi-agent task:
+  {example_reward_function}
+
+
+reward_function_format: |
+  Provide the reward function in the following format:
+  
+  ```
+  def get_reward(self):
+      # Your reward function logic here
+      return reward  # A total reward for all agents
+  ```
+
+system_prompt: intro + "\n\n" + environment_description + "\n\n" + task_description
+
+first_user_prompt_without_example: |
+  {zero-shot_hint}
+  Based on the environment description and the task description, design a reward function that effectively guides the agents towards achieving the task.
+  {reward_function_format}
+
+first_user_prompt_with_example: |
+  {one-shot_hint}
+  Based on the environment description and the task description, design a reward function that effectively guides the agents towards achieving the task.
+  {reward_function_format}
+
+improvement_prompt: |
+  Review the following reward function:
+  
+  ```
+  {proposed_reward_function}
+  ```
+  
+  Suggest improvements to enhance its effectiveness in guiding the agents towards achieving the task, considering aspects such as alignment with task objectives, shaping rewards, avoiding unintended behaviors, scalability, and simplicity.
