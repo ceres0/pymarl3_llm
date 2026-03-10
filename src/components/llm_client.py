@@ -129,7 +129,11 @@ class LLMClient:
 
         try:
             response = self.client.messages.create(**api_params)
-            return response.content[0].text
+            texts = []
+            for block in response.content:
+                if hasattr(block, "text"):
+                    texts.append(block.text)
+            return "\n".join(texts).strip()
         except Exception as e:
             raise RuntimeError(f"LLM API call failed: {str(e)}")
 
@@ -175,7 +179,11 @@ class LLMClient:
 
         try:
             response = self.client.messages.create(**api_params)
-            return response.content[0].text
+            texts = []
+            for block in response.content:
+                if hasattr(block, "text"):
+                    texts.append(block.text)
+            return "\n".join(texts).strip()
         except Exception as e:
             raise RuntimeError(f"LLM API call failed: {str(e)}")
 
