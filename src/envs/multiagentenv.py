@@ -1,3 +1,6 @@
+import types
+
+
 class MultiAgentEnv(object):
 
     def step(self, actions):
@@ -58,3 +61,17 @@ class MultiAgentEnv(object):
                     "n_agents": self.n_agents,
                     "episode_limit": self.episode_limit}
         return env_info
+
+    # 替换reward_battle函数，并保存原函数以便恢复
+    def replace_reward_battle(self, reward_battle_func):
+        # 备份原始方法（从类或实例获取）
+        self.reward_battle_copy = self.__class__.reward_battle
+        # 将新函数绑定为实例方法，确保 self 能正确传入
+        self.reward_battle = types.MethodType(reward_battle_func, self)
+
+    # 恢复原始 reward_battle 函数
+    def restore_reward_battle(self):
+        if hasattr(self, 'reward_battle_copy'):
+            self.reward_battle = types.MethodType(
+                self.reward_battle_copy, self)
+            del self.reward_battle_copy

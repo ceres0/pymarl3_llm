@@ -1,0 +1,94 @@
+# ============================================================
+# SMAC v1 (StarCraft II Multi-Agent Challenge) — LLM prompts
+# Configuration for reward-function generation tasks.
+# ============================================================
+
+env_description: |
+  StarCraft II micromanagement environment (SMAC v1).
+  At every timestep ALL agents share a single scalar team reward returned by `reward_battle(self)`.
+  The following attributes are accessible via `self` inside the reward function:
+    self.agents          : dict[int, Unit]  — ally units indexed by agent_id (0-based)
+    self.enemies         : dict[int, Unit]  — enemy units indexed by enemy_id (0-based)
+    self.n_agents        : int              — total number of ally agents
+    self.n_enemies       : int              — total number of enemy units
+    self.death_tracker_ally[al_id]  : int (0/1) — 1 if ally al_id has already died this episode
+    self.death_tracker_enemy[e_id]  : int (0/1) — 1 if enemy e_id has already died this episode
+    self.previous_ally_units[al_id] : Unit  — ally unit state at the previous timestep
+    self.previous_enemy_units[e_id] : Unit  — enemy unit state at the previous timestep
+    Unit attributes: .health (float), .shield (float), .energy (float),
+                     .pos.x (float), .pos.y (float), .unit_type (int)
+    self.reward_death_value    : float — bonus reward added per enemy unit killed
+    self.reward_negative_scale : float — scale factor applied to ally-damage penalty (default 0.5)
+    self.reward_only_positive  : bool  — if True, clip the final reward to be non-negative
+    self.reward_sparse         : bool  — if True, return 0 at every non-terminal step
+    self.win_counted           : bool  — whether a win has already been logged for this episode
+    self.defeat_counted        : bool  — whether a defeat has already been logged for this episode
+
+# Template — runtime placeholders: {map_name}, {n_agents}, {n_enemies}
+task_description_template: |
+  Map: {map_name}.
+  Control {n_agents} ally units to defeat {n_enemies} enemy units controlled by the built-in AI.
+  Win condition: all enemy units are eliminated while at least one ally unit survives.
+  The reward function should:
+    1. Positively reward damage dealt to enemy units (proportional to HP/shield lost).
+    2. Give a large bonus when an enemy unit is killed.
+    3. Penalise damage taken by ally units (scaled by reward_negative_scale).
+    4. Give a large penalty when an ally unit is killed (unless reward_only_positive is True).
+  The function must return a single scalar float representing the team reward for this timestep.
+
+# Original reward_battle implementation — used as a one-shot reference for the LLM.
+original_reward_function: |
+  def reward_battle(self):
+      """Reward function when self.reward_sparse == False.
+      Returns accumulative hit/shield point damage dealt to the enemy
+      + reward_death_value per enemy unit killed, and, unless
+      self.reward_only_positive is True, subtracts the damage dealt to ally
+      units scaled by reward_negative_scale.
+      """
+      if self.reward_sparse:
+          return 0
+
+      reward = 0
+      delta_deaths = 0
+      delta_ally = 0
+      delta_enemy = 0
+
+      neg_scale = self.reward_negative_scale
+
+      # Ally damage / death
+      for al_id, al_unit in self.agents.items():
+          if not self.death_tracker_ally[al_id]:
+              prev_health = (
+                  self.previous_ally_units[al_id].health
+                  + self.previous_ally_units[al_id].shield
+              )
+              if al_unit.health == 0:
+                  self.death_tracker_ally[al_id] = 1
+                  if not self.reward_only_positive:
+                      delta_deaths -= self.reward_death_value * neg_scale
+                  delta_ally += prev_health * neg_scale
+              else:
+                  delta_ally += neg_scale * (
+                      prev_health - al_unit.health - al_unit.shield
+                  )
+
+      # Enemy damage / death
+      for e_id, e_unit in self.enemies.items():
+          if not self.death_tracker_enemy[e_id]:
+              prev_health = (
+                  self.previous_enemy_units[e_id].health
+                  + self.previous_enemy_units[e_id].shield
+              )
+              if e_unit.health == 0:
+                  self.death_tracker_enemy[e_id] = 1
+                  delta_deaths += self.reward_death_value
+                  delta_enemy += prev_health
+              else:
+                  delta_enemy += prev_health - e_unit.health - e_unit.shield
+
+      if self.reward_only_positive:
+          reward = abs(delta_enemy + delta_deaths)
+      else:
+          reward = delta_enemy + delta_deaths - delta_ally
+
+      return reward

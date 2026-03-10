@@ -259,8 +259,82 @@ def run_sequential(args, logger):
     logger.console_logger.info(
         "Beginning training for {} timesteps".format(args.t_max))
 
-    # TODO: generate the first reward function with LLM
-    # TODO: replace the original reward with the generated one and run the training loop for a while
+    # ------------------------------------------------------------------ #
+    #  Generate the initial reward function with LLM and replace it      #
+    # ------------------------------------------------------------------ #
+    # env_description, task_description_template, and original_reward_function
+    # are loaded from  src/config/prompts/smac.yaml  (or the YAML matching
+    # args.env).  Only runtime-dynamic values are passed here.
+    # e.g. "sc2" -> "smac", "sc2_v2" -> "smac"
+    _env_config_name = args.env.split("_v")[0]
+    # Map known environment keys to their config file name
+    _ENV_CONFIG_MAP = {"sc2": "smac", "sc2_v2": "smac"}
+    _env_config_name = _ENV_CONFIG_MAP.get(args.env, args.env)
+
+    try:
+        from components.llm_generator import LLMGenerator
+
+        _gen_output_dir = os.path.join(
+            args.local_results_path, "generated", args.unique_token
+        )
+        llm_gen = LLMGenerator(
+            output_dir=_gen_output_dir,
+            prompts_name="default",
+            env_config_name=_env_config_name,
+        )
+        logger.console_logger.info(
+            "[LLM] Generating initial reward function "
+            "(env_config='{}') …".format(_env_config_name)
+        )
+        # Pass only runtime values; static content is read from smac.yaml
+        reward_code = llm_gen.generate_reward_function(
+            map_name=args.env_args.get("map_name", "unknown"),
+            n_agents=args.n_agents,
+            n_enemies=args.n_enemies,
+        )
+        logger.console_logger.info(
+            "[LLM] Generated reward_battle code:\n{}".format(reward_code)
+        )
+
+        # Compile the generated code and extract the reward_battle function
+        _namespace = {}
+        exec(compile(reward_code, "<llm_generated>", "exec"), _namespace)  # noqa: S102
+
+        if "reward_battle" in _namespace:
+            _new_reward_fn = _namespace["reward_battle"]
+        else:
+            # Fallback: pick the first callable that isn't a class
+            _callables = [
+                v for v in _namespace.values()
+                if callable(v) and not isinstance(v, type)
+            ]
+            if not _callables:
+                raise ValueError(
+                    "LLM response did not contain a callable reward function."
+                )
+            _new_reward_fn = _callables[0]
+
+        # Replace the env's reward_battle method (EpisodeRunner exposes .env directly)
+        if hasattr(runner, "env"):
+            runner.env.replace_reward_battle(_new_reward_fn)
+            logger.console_logger.info(
+                "[LLM] reward_battle successfully replaced in the environment."
+            )
+        else:
+            logger.console_logger.warning(
+                "[LLM] Runner type '{}' does not expose a direct `.env` attribute; "
+                "LLM reward replacement skipped.".format(type(runner).__name__)
+            )
+
+    except Exception as _llm_exc:
+        logger.console_logger.warning(
+            "[LLM] Reward function generation/replacement failed ({}: {}). "
+            "Proceeding with the original reward_battle.".format(
+                type(_llm_exc).__name__, _llm_exc
+            )
+        )
+
+    # ------------------------------------------------------------------ #
 
     while runner.t_env <= args.t_max:
         # Run for a whole episode at a time
