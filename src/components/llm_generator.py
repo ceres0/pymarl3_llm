@@ -1,9 +1,13 @@
+import builtins
+import logging
 import os
 import re
 import yaml
 from typing import Any, Optional
 
 from .llm_client import LLMClient
+
+_logger = logging.getLogger(__name__)
 
 
 class LLMGenerator:
@@ -74,6 +78,7 @@ class LLMGenerator:
         task_description: Optional[str] = None,
         example_reward: Optional[str] = None,
         agents_obs_spaces: str = "",
+        max_retries: int = 3,
         **task_template_kwargs: Any,
     ) -> str:
         """Generate a reward function via the LLM.
@@ -90,6 +95,9 @@ class LLMGenerator:
             example_reward: Optional one-shot reference implementation.
                 Falls back to ``env_config['original_reward_function']``.
             agents_obs_spaces: Optional observation / action-space description.
+            max_retries: Maximum generation attempts. Each failed validation
+                discards the result and calls the LLM again.  Raises
+                :class:`RuntimeError` if all attempts are exhausted.
             **task_template_kwargs: Runtime values used to format the
                 ``task_description_template`` (e.g. ``map_name``, ``n_agents``,
                 ``n_enemies``).
@@ -154,31 +162,90 @@ class LLMGenerator:
                 "achieving the task.\n{rf_format}"
             ).format(zeroshot=zeroshot, rf_format=rf_format)
 
-        # -- call LLM --
-        response = self.llm_client.generate(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
+        # -- call LLM with retry on validation failure --
+        last_error: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            response = self.llm_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+            )
+            code = self.parse_code_from_response(response)
+
+            try:
+                self._validate_reward_code(code)
+            except Exception as exc:
+                last_error = exc
+                _logger.warning(
+                    "[LLMGenerator] Attempt %d/%d: validation failed (%s: %s). "
+                    "Discarding and retrying...",
+                    attempt, max_retries, type(exc).__name__, exc,
+                )
+                continue
+
+            # -- validation passed: persist and return --
+            os.makedirs(self.output_dir, exist_ok=True)
+            raw_path = os.path.join(self.output_dir, "reward_function_response.txt")
+            with open(raw_path, "w", encoding="utf-8") as f:
+                f.write(response)
+
+            code_path = os.path.join(self.output_dir, "reward_function.py")
+            with open(code_path, "w", encoding="utf-8") as f:
+                f.write("# LLM-generated reward function\n\n")
+                f.write(code)
+
+            return code
+
+        raise RuntimeError(
+            "LLM failed to produce a valid reward_battle function after {} attempt(s). "
+            "Last error: {}: {}".format(max_retries, type(last_error).__name__, last_error)
         )
-
-        # -- persist full response and extracted code --
-        os.makedirs(self.output_dir, exist_ok=True)
-        raw_path = os.path.join(
-            self.output_dir, "reward_function_response.txt")
-        with open(raw_path, "w", encoding="utf-8") as f:
-            f.write(response)
-
-        code = self.parse_code_from_response(response)
-
-        code_path = os.path.join(self.output_dir, "reward_function.py")
-        with open(code_path, "w", encoding="utf-8") as f:
-            f.write("# LLM-generated reward function\n\n")
-            f.write(code)
-
-        return code
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_reward_code(code: str) -> None:
+        """Syntax check + lightweight dry-run of generated reward code.
+
+        Steps:
+        1. ``compile()`` — catches all ``SyntaxError`` / ``IndentationError``.
+        2. ``exec()`` inside a lenient namespace where any unknown global name
+           resolves to a :class:`unittest.mock.MagicMock`, so common patterns
+           like ``import numpy as np`` or bare name references don't
+           auto-fail.
+        3. Call ``reward_battle(mock_env)`` — catches ``TypeError``,
+           ``NameError``, ``AttributeError``, and other runtime errors that
+           surface immediately.
+
+        Raises:
+            SyntaxError: invalid Python syntax.
+            ValueError: ``reward_battle`` is missing or not callable.
+            Exception: any exception raised when calling ``reward_battle``.
+        """
+        from unittest.mock import MagicMock  # stdlib — always available
+
+        # 1. Syntax check
+        compiled = compile(code, "<llm_generated>", "exec")
+
+        # 2. Exec inside a lenient globals dict so unknown names don't raise
+        class _LenientGlobals(dict):
+            def __missing__(self, key: str):  # type: ignore[override]
+                m = MagicMock(name=key)
+                self[key] = m
+                return m
+
+        ns: dict = _LenientGlobals({"__builtins__": vars(builtins)})
+        exec(compiled, ns)  # noqa: S102
+
+        fn = ns.get("reward_battle")
+        if fn is None or not callable(fn):
+            raise ValueError(
+                "Generated code does not define a callable 'reward_battle'."
+            )
+
+        # 3. Dry-run: call with a MagicMock acting as the environment ``self``
+        fn(MagicMock())
 
     @staticmethod
     def parse_code_from_response(response: str) -> str:
